@@ -1,0 +1,31 @@
+*.mp3
+app - Pronunciation Editor.py
+.env
+# 🐍 Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.log
+venv/
+env/
+# 📂 Compiled, cache & system files
+.DS_Store
+Thumbs.db
+
+# 🔄 Streamlit
+#.streamlit/
+
+# 🧪 Temporary or backup files
+*~ 
+*.bak
+*.tmp
+*.swp
+*.swo
+output/
+app - Copy.py
+assets/
+OWASP 10.txt
+output/
+app - Copy (2).py
