@@ -88,6 +88,10 @@ def extract_text_from_file(uploaded_file, file_type):
             text += page.extract_text()
         return text
 
+    elif file_type == "doc":
+        doc = doc.Document(uploaded_file)
+        return "\n".join([para.text for para in doc.paragraphs])
+    
     elif file_type == "docx":
         doc = docx.Document(uploaded_file)
         return "\n".join([para.text for para in doc.paragraphs])
@@ -102,7 +106,7 @@ if input_mode == "Type Text":
     user_text = st.text_area("Enter Text to Convert to Speech", height=200)
 
 else:
-    uploaded_file = st.file_uploader("Upload a text file", type=["txt", "pdf", "docx"])
+    uploaded_file = st.file_uploader("Upload a text file", type=["txt", "pdf", "doc", "docx"])
     if uploaded_file is not None:
         file_type = uploaded_file.name.split(".")[-1].lower()
         user_text = extract_text_from_file(uploaded_file, file_type)
