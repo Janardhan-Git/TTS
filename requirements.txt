@@ -6,3 +6,6 @@ langdetect
 uuid
 python-docx
 PyPDF2
+mammoth 
+markdown
+striprtf
