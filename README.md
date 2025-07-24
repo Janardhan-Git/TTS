@@ -17,7 +17,7 @@ Convert text to realistic speech using Microsoft's Edge TTS API with a beautiful
 
 ### 🖼️ Preview
 
-![App Screenshot](assets/screenshot.png)
+![App Screenshot](assets/screenshot.png, assets/Screenshot1.png, assets/screenshot2.png, assets/screenshot3.png)
 
 ---
 
