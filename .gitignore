@@ -30,4 +30,11 @@ output/
 app - Copy (2).py
 Copies/
 app - Pronunciation Editor.py
+run_tts_app.ps1
+pyproject.toml
+Features to be added.txt
+dev-requirements.txt
+.vscode/
+assets
+
 
