@@ -138,7 +138,12 @@ if user_text:
 
 
 def clean_text(text):
-    return re.sub(r"[^\w\s\u0C00-\u0C7F.,!?;:'\"()-]", "", text)
+    return re.sub(r"[^\w\s\u0C00-\u0C7F.,!?;:'\"()%+$@-]", "", text)
+
+# def clean_text(text):
+#     # Allow letters, digits, whitespace, and specific symbols (% + $ @ - ? . , ! ; : ' " ( ) )
+#     return re.sub(r"[^\w\s\u0C00-\u0C7F%+$@\-?.!,;:'\"()]", "", text)
+
 
 
 async def generate_speech(text, voice, rate, output_file):
@@ -206,7 +211,7 @@ if user_text and st.button("🗣️ Read Aloud in Browser"):
     function speakText() {{
         utterance = new SpeechSynthesisUtterance(text);
         let allVoices = speechSynthesis.getVoices();
-        const preferredVoiceName = `{voice_options[voice]}`;
+        const preferredVoiceName = "Microsoft Mark - English (United States)";
         const matchedVoice = allVoices.find(v => v.name === preferredVoiceName);
         if (matchedVoice) utterance.voice = matchedVoice;
         utterance.rate = {rate_map[rate]};
@@ -247,7 +252,7 @@ if user_text and st.button("🗣️ Read Aloud in Browser"):
         let newText = words.slice(wordIndex).join(' ');
         utterance = new SpeechSynthesisUtterance(newText);
         let allVoices = speechSynthesis.getVoices();
-        const preferredVoiceName = `{voice_options[voice]}`;
+        const preferredVoiceName = "Microsoft Mark - English (United States)";
         const matchedVoice = allVoices.find(v => v.name === preferredVoiceName);
         if (matchedVoice) utterance.voice = matchedVoice;
         utterance.rate = {rate_map[rate]};
@@ -336,18 +341,23 @@ function speakSentence(sentence) {{
 
     synth.cancel();
 
-    sentenceUtterance = new SpeechSynthesisUtterance(sentence);
-    const matched = cachedVoices.find(v => v.name.toLowerCase().includes("{actual_voice_name.lower()}")) || cachedVoices[0];
+    let allSpans = Array.from(document.querySelectorAll('.sentence'));
+    let startIndex = allSpans.findIndex(el => el.textContent.trim() === sentence.trim());
+    if (startIndex === -1) return;
+
+    let remainingSentences = allSpans.slice(startIndex).map(el => el.textContent).join(' ');
+    sentenceUtterance = new SpeechSynthesisUtterance(remainingSentences);
+
+    const matched = cachedVoices.find(v => v.name === "Microsoft Mark - English (United States)") || cachedVoices[0];
     sentenceUtterance.voice = matched;
     sentenceUtterance.lang = matched.lang;
     sentenceUtterance.rate = {rate_map[rate]};
 
-    document.querySelectorAll('.sentence').forEach(el => el.style.background = '');
-    let span = Array.from(document.querySelectorAll('.sentence')).find(el => el.textContent.trim() === sentence.trim());
-    if (span) span.style.background = 'yellow';
+    allSpans.forEach(el => el.style.background = '');
+    if (allSpans[startIndex]) allSpans[startIndex].style.background = 'yellow';
 
     sentenceUtterance.onend = () => {{
-        if (span) span.style.background = '';
+        allSpans.forEach(el => el.style.background = '');
         sentenceUtterance = null;
     }};
 
@@ -374,7 +384,7 @@ function skipSentence(forward) {{
 
 </script>
 
-<div style="margin-top:10px;">
+<div style="margin-top:1px;">
     <button onclick="skipSentence(false)">⏪ Prev</button>
     <button onclick="togglePauseResume()">⏯️ Pause/Resume</button>
     <button onclick="skipSentence(true)">Next ⏩</button>
