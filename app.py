@@ -3,33 +3,60 @@ import edge_tts
 import asyncio
 import os
 import uuid
-import time
 import re
-from streamlit import markdown
+import json
 import streamlit.components.v1 as components
 from streamlit_lottie import st_lottie
-import json
 import docx
 import mammoth
 import markdown
 import PyPDF2
-import striprtf
-from langdetect import detect
+from striprtf.striprtf import rtf_to_text
+from langdetect import detect, LangDetectException
+import base64
+import nest_asyncio
 
+# Apply nest_asyncio to allow nested event loops
+nest_asyncio.apply()
+
+# Utility Functions
+def load_json(file, default):
+    if os.path.exists(file):
+        try:
+            with open(file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            st.error(f"Failed to load {file}: {e}")
+            return default
+    return default
+
+def save_json(file, data):
+    try:
+        with open(file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        st.error(f"Failed to save {file}: {e}")
 
 def load_lottie(filepath):
-    with open(filepath, "r") as f:
-        return json.load(f)
+    try:
+        with open(filepath, "r") as f:
+            return json.load(f)
+    except Exception as e:
+        st.error(f"Failed to load animation: {e}")
+        return None
 
-
+# Streamlit Page Configuration
 st.set_page_config(
     page_title="Text to Speech with Edge-TTS", layout="centered", page_icon="🗣️"
 )
 st.title("🗣️ Text-to-Speech App with Edge-TTS")
 
+# Load and display Lottie animation
 lottie_animation = load_lottie("assets/animation.json")
-st_lottie(lottie_animation, height=150, key="header_animation")
+if lottie_animation:
+    st_lottie(lottie_animation, height=150, key="header_animation")
 
+# Custom CSS for styling
 st.markdown(
     """
     <style>
@@ -48,60 +75,115 @@ st.markdown(
         height: 3em;
         width: 100%;
     }
+    .audio-controls button {
+        background-color: #3b82f6;
+        color: white;
+        border: none;
+        border-radius: 5px;
+        padding: 5px 15px;
+        margin: 0 5px;
+        cursor: pointer;
+    }
+    .sentence:hover {
+        background-color: #f0f0f0;
+    }
     </style>
 """,
     unsafe_allow_html=True,
 )
 
+# Voice and Speed Options
 voice_options = {
     "English - Female": "en-US-JennyNeural",
     "English - Male": "en-US-GuyNeural",
     "Telugu - Male": "te-IN-MohanNeural",
     "Telugu - Female": "te-IN-ShrutiNeural",
 }
-
 speed_map = {"Fast": "+25%", "Normal": "+0%", "Slow": "-25%"}
 rate_map = {"Fast": 1.25, "Normal": 1.0, "Slow": 0.75}
 
+# Sidebar Settings
 st.sidebar.header("🔧 Settings")
 voice = st.sidebar.selectbox("Select Voice", list(voice_options.keys()))
 rate = st.sidebar.selectbox("Select Speed", list(speed_map.keys()))
 
-st.sidebar.subheader("🗣️ Pronunciation Editor (Optional)")
-custom_word = st.sidebar.text_input("Word to replace (e.g., OpenAI)")
-custom_pronunciation = st.sidebar.text_input(
-    "SSML (e.g., <phoneme alphabet='ipa' ph='ˈəʊ.pən.aɪ'>OpenAI</phoneme>)"
-)
+# Pronunciation Editor
+PRON_FILE = "pronunciations.json"
+pronunciations = load_json(PRON_FILE, {})
 
+st.sidebar.subheader("🗣️ Pronunciation Editor (Persistent)")
+custom_word = st.sidebar.text_input("Word (e.g., OpenAI)")
+custom_pronunciation = st.sidebar.text_input("Pronunciation/SSML")
 
+if st.sidebar.button("💾 Save Pronunciation"):
+    if custom_word and custom_pronunciation:
+        pronunciations[custom_word] = custom_pronunciation
+        save_json(PRON_FILE, pronunciations)
+        st.sidebar.success(f"Saved pronunciation for '{custom_word}'")
+
+if pronunciations:
+    st.sidebar.markdown("### 📌 Stored Pronunciations")
+    for word, pron in pronunciations.items():
+        st.sidebar.write(f"- **{word}** → {pron}")
+
+# File Text Extraction
 def extract_text_from_file(uploaded_file, file_type):
-    if file_type == "txt":
-        return uploaded_file.read().decode("utf-8")
-    elif file_type == "pdf":
-        reader = PyPDF2.PdfReader(uploaded_file)
-        return "\n".join(
-            page.extract_text() for page in reader.pages if page.extract_text()
-        )
-    elif file_type == "docx":
-        document_obj = docx.Document(uploaded_file)
-        return "\n".join([para.text for para in document_obj.paragraphs])
-    elif file_type == "doc":
-        try:
+    try:
+        if file_type == "txt":
+            return uploaded_file.read().decode("utf-8")
+        elif file_type == "pdf":
+            reader = PyPDF2.PdfReader(uploaded_file)
+            return "\n".join(
+                page.extract_text() for page in reader.pages if page.extract_text()
+            )
+        elif file_type == "docx":
+            document_obj = docx.Document(uploaded_file)
+            return "\n".join([para.text for para in document_obj.paragraphs])
+        elif file_type == "doc":
             result = mammoth.convert_to_markdown(uploaded_file)
             return result.value
-        except ValueError:
-            return (
-                "⚠️ Unable to parse .doc file. Please ensure it's a valid Word document."
-            )
-    elif file_type == "md":
-        raw_md = uploaded_file.read().decode("utf-8")
-        return markdown.markdown(raw_md)
-    elif file_type == "rtf":
-        raw_rtf = uploaded_file.read().decode("utf-8")
-        return striprtf.rtf_to_text(raw_rtf)
-    return ""
+        elif file_type == "md":
+            raw_md = uploaded_file.read().decode("utf-8")
+            return markdown.markdown(raw_md)
+        elif file_type == "rtf":
+            raw_rtf = uploaded_file.read().decode("utf-8")
+            return rtf_to_text(raw_rtf)
+        return ""
+    except Exception as e:
+        st.error(f"Error processing file: {e}")
+        return ""
 
+# History Management
+HISTORY_FILE = "history.json"
+history = load_json(HISTORY_FILE, [])
 
+st.sidebar.subheader("📝 History of Texts")
+if history:
+    selected_history = st.sidebar.selectbox(
+        "Pick a saved text", ["Select a text..."] + history
+    )
+    if (
+        selected_history != "Select a text..."
+        and st.sidebar.button("🔄 Load from History")
+    ):
+        st.session_state["loaded_text"] = selected_history
+        st.sidebar.success("Loaded from history!")
+
+    # Clear History Button
+    if st.sidebar.button("🗑️ Clear History"):
+        history.clear()
+        save_json(HISTORY_FILE, [])
+        st.session_state.pop("loaded_text", None)
+        st.sidebar.success("History cleared!")
+else:
+    st.sidebar.write("No history available.")
+
+# Clear Loaded Text Button
+if "loaded_text" in st.session_state and st.sidebar.button("🧹 Clear Loaded Text"):
+    st.session_state.pop("loaded_text", None)
+    st.sidebar.success("Loaded text cleared!")
+
+# Input Handling
 input_mode = st.radio("Choose Input Type", ["Type Text", "Upload File"])
 user_text = ""
 
@@ -114,92 +196,124 @@ else:
     if uploaded_file is not None:
         file_type = uploaded_file.name.split(".")[-1].lower()
         user_text = extract_text_from_file(uploaded_file, file_type)
-        # Only show preview if no text entered/uploaded
-        if not user_text.strip():
-            st.text_area("📄 Preview Uploaded Text", user_text, height=200)
 
+# Load from session state if available
+if "loaded_text" in st.session_state and st.session_state["loaded_text"]:
+    user_text = st.session_state["loaded_text"]
+
+# Display preview if text is available
 if user_text:
+    st.text_area("📄 Preview Text", user_text, height=200, disabled=True)
+
+# Save to history
+if user_text and st.button("📌 Save to History"):
+    if user_text not in history:
+        history.append(user_text)
+        save_json(HISTORY_FILE, history)
+        st.success("✅ Text saved to history")
+
+# Language Detection and Voice Validation
+def validate_language_and_voice(text, selected_voice):
     try:
-        lang = detect(user_text)
+        lang = detect(text)
         st.sidebar.markdown(f"🌍 Detected Language: **{lang.upper()}**")
-        if lang == "te" and not voice.startswith("Telugu"):
-            st.warning(
-                "⚠️ Telugu text detected. Please select a Telugu voice from sidebar."
-            )
-        elif lang == "en" and not voice.startswith("English"):
-            st.warning(
-                "⚠️ English text detected. Please select an English voice from sidebar."
-            )
-    except:
+        if lang == "te" and not selected_voice.startswith("Telugu"):
+            st.warning("⚠️ Telugu text detected. Consider selecting a Telugu voice.")
+        elif lang == "en" and not selected_voice.startswith("English"):
+            st.warning("⚠️ English text detected. Consider selecting an English voice.")
+        return lang
+    except LangDetectException:
         st.sidebar.warning("⚠️ Could not detect language")
+        return None
 
-    if custom_word and custom_pronunciation:
-        user_text = user_text.replace(custom_word, custom_pronunciation)
+# Apply pronunciations once
+def apply_pronunciations(text, pronunciations):
+    for word, pron in pronunciations.items():
+        text = text.replace(word, pron)
+    return text
 
-
+# Clean text for TTS
 def clean_text(text):
-    return re.sub(r"[^\w\s\u0C00-\u0C7F.,!?;:'\"()%+$@-]", "", text)
+    # Support broader Unicode range for multilingual text
+    return re.sub(r"[^\w\s\u0020-\uFFFF.,!?;:'\"()%+$@-]", "", text)
 
-# def clean_text(text):
-#     # Allow letters, digits, whitespace, and specific symbols (% + $ @ - ? . , ! ; : ' " ( ) )
-#     return re.sub(r"[^\w\s\u0C00-\u0C7F%+$@\-?.!,;:'\"()]", "", text)
-
-
-
+# Async TTS Generation
 async def generate_speech(text, voice, rate, output_file):
     try:
         communicate = edge_tts.Communicate(text=text, voice=voice, rate=rate)
         await communicate.save(output_file)
+        return True
     except Exception as e:
         st.error(f"❌ Failed to generate audio: {str(e)}")
         st.code(f"Voice: {voice}\nRate: {rate}\nText: {text[:200]}")
-        raise
+        return False
 
+# Helper function to run async code safely in Streamlit
+def run_async(coro):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
+# Process and generate speech
 if user_text:
-    cleaned_text = clean_text(user_text)
-    # Preview removed after entering/uploading text
+    # Validate language
+    validate_language_and_voice(user_text, voice)
+    
+    # Apply pronunciations
+    processed_text = apply_pronunciations(user_text, pronunciations)
+    cleaned_text = clean_text(processed_text)
 
     if st.button("🎧 Convert to Speech"):
         output_file = f"{uuid.uuid4().hex}.mp3"
-        with st.spinner("Generating audio... Please wait ⏳"):
-            asyncio.run(
-                generate_speech(
-                    cleaned_text, voice_options[voice], speed_map[rate], output_file
+        try:
+            with st.spinner("Generating audio... Please wait ⏳"):
+                # Run async task using helper function
+                success = run_async(
+                    generate_speech(cleaned_text, voice_options[voice], speed_map[rate], output_file)
                 )
-            )
-        st.success("✅ Conversion Complete!")
+            if success:
+                st.success("✅ Conversion Complete!")
+                try:
+                    with open(output_file, "rb") as audio_file:
+                        audio_bytes = audio_file.read()
+                        audio_base64 = base64.b64encode(audio_bytes).decode()
+                        st.markdown(
+                            f"""
+                            <audio id="tts-audio" controls style="width:100%;">
+                                <source src="data:audio/mp3;base64,{audio_base64}" type="audio/mp3">
+                                Your browser does not support the audio element.
+                            </audio>
+                            <div class="audio-controls" style="margin-top:8px;">
+                                <button onclick="var a=document.getElementById('tts-audio'); a.currentTime=Math.max(0,a.currentTime-10);">⏪ 10s</button>
+                                <button onclick="var a=document.getElementById('tts-audio'); a.currentTime=Math.min(a.duration,a.currentTime+10);">10s ⏩</button>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                        st.download_button(
+                            label="📥 Download Audio",
+                            data=audio_bytes,
+                            file_name="converted_speech.mp3",
+                            mime="audio/mp3",
+                        )
+                except Exception as e:
+                    st.error(f"Error reading audio file: {e}")
+        finally:
+            if os.path.exists(output_file):
+                try:
+                    os.remove(output_file)
+                except Exception as e:
+                    st.warning(f"Failed to clean up audio file: {e}")
 
-        # Play Audio with custom controls (10s skip)
-        audio_file = open(output_file, "rb")
-        audio_bytes = audio_file.read()
-        import base64
-
-        audio_base64 = base64.b64encode(audio_bytes).decode()
-        st.markdown(
-            f"""
-            <audio id="tts-audio" controls style="width:100%;">
-                <source src="data:audio/mp3;base64,{audio_base64}" type="audio/mp3">
-                Your browser does not support the audio element.
-            </audio>
-            <div style="margin-top:8px;">
-                <button onclick="var a=document.getElementById('tts-audio'); a.currentTime=Math.max(0,a.currentTime-10);">⏪ 10s</button>
-                <button onclick="var a=document.getElementById('tts-audio'); a.currentTime=Math.min(a.duration,a.currentTime+10);">10s ⏩</button>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.download_button(
-            label="📥 Download Audio",
-            data=audio_bytes,
-            file_name="converted_speech.mp3",
-            mime="audio/mp3",
-        )
-        audio_file.close()
-        os.remove(output_file)
-
+# Browser-based TTS
 if user_text and st.button("🗣️ Read Aloud in Browser"):
+    cleaned_text = clean_text(user_text)
     escaped_text = cleaned_text.replace('"', '\\"').replace("\n", " ")
+    # Map selected voice to a browser-compatible voice if possible
+    browser_voice = "Microsoft Mark - English (United States)" if voice.startswith("English") else None
     html_code = f"""
     <script>
     let utterance = null;
@@ -211,8 +325,8 @@ if user_text and st.button("🗣️ Read Aloud in Browser"):
     function speakText() {{
         utterance = new SpeechSynthesisUtterance(text);
         let allVoices = speechSynthesis.getVoices();
-        const preferredVoiceName = "Microsoft Mark - English (United States)";
-        const matchedVoice = allVoices.find(v => v.name === preferredVoiceName);
+        const preferredVoiceName = "{browser_voice or ''}";
+        const matchedVoice = preferredVoiceName ? allVoices.find(v => v.name === preferredVoiceName) : allVoices[0];
         if (matchedVoice) utterance.voice = matchedVoice;
         utterance.rate = {rate_map[rate]};
 
@@ -252,8 +366,8 @@ if user_text and st.button("🗣️ Read Aloud in Browser"):
         let newText = words.slice(wordIndex).join(' ');
         utterance = new SpeechSynthesisUtterance(newText);
         let allVoices = speechSynthesis.getVoices();
-        const preferredVoiceName = "Microsoft Mark - English (United States)";
-        const matchedVoice = allVoices.find(v => v.name === preferredVoiceName);
+        const preferredVoiceName = "{browser_voice or ''}";
+        const matchedVoice = preferredVoiceName ? allVoices.find(v => v.name === preferredVoiceName) : allVoices[0];
         if (matchedVoice) utterance.voice = matchedVoice;
         utterance.rate = {rate_map[rate]};
         utterance.onboundary = (event) => {{
@@ -265,6 +379,11 @@ if user_text and st.button("🗣️ Read Aloud in Browser"):
                 }}
             }}
         }};
+        utterance.onend = () => {{
+            spans.forEach(span => span.style.background = '');
+            wordIndex = 0;
+        }};
+
         speechSynthesis.speak(utterance);
     }}
 
@@ -278,7 +397,7 @@ if user_text and st.button("🗣️ Read Aloud in Browser"):
     }}
 
     window.onload = function() {{
-        speakText();
+        speechSynthesis.onvoiceschanged = () => speakText();
     }};
     </script>
     <style>
@@ -286,7 +405,7 @@ if user_text and st.button("🗣️ Read Aloud in Browser"):
     .word {{ padding: 2px; margin-right: 2px; }}
     </style>
     <div id="highlighted-text"></div>
-    <div style="margin-top:8px;">
+    <div class="audio-controls" style="margin-top:8px;">
         <button onclick="skip10s(false)">⏪ 10s</button>
         <button onclick="togglePauseResume()">⏯️ Pause/Resume</button>
         <button onclick="skip10s(true)">10s ⏩</button>
@@ -294,13 +413,15 @@ if user_text and st.button("🗣️ Read Aloud in Browser"):
     """
     components.html(html_code)
 
+# Sentence-by-Sentence Reading
 if user_text:
+    cleaned_text = clean_text(user_text)
     escaped_sentences = re.split(r"(?<=[.!?]) +", cleaned_text.replace("\n", " "))
     js_sentence_click = """
     <div id="sentence-text" style="line-height: 2; padding: 10px; max-height: 300px; overflow-y: auto;">
     """
     for sentence in escaped_sentences:
-        clean_sent = sentence.strip().replace('"', '"')
+        clean_sent = sentence.strip().replace('"', '\\"')
         js_sentence_click += (
             f"<span class='sentence' onclick='speakSentence(\"{clean_sent}\")' style='cursor:pointer; display:block; padding:5px; margin-bottom:8px; border:1px solid #ccc; border-radius:6px;'>"
             + sentence
@@ -348,13 +469,16 @@ function speakSentence(sentence) {{
     let remainingSentences = allSpans.slice(startIndex).map(el => el.textContent).join(' ');
     sentenceUtterance = new SpeechSynthesisUtterance(remainingSentences);
 
-    const matched = cachedVoices.find(v => v.name === "Microsoft Mark - English (United States)") || cachedVoices[0];
+    const matched = cachedVoices.find(v => v.name.includes("English") || v.name.includes("Telugu")) || cachedVoices[0];
     sentenceUtterance.voice = matched;
     sentenceUtterance.lang = matched.lang;
     sentenceUtterance.rate = {rate_map[rate]};
 
     allSpans.forEach(el => el.style.background = '');
-    if (allSpans[startIndex]) allSpans[startIndex].style.background = 'yellow';
+    if (allSpans[startIndex]) {{
+        allSpans[startIndex].style.background = 'yellow';
+        allSpans[startIndex].scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+    }}
 
     sentenceUtterance.onend = () => {{
         allSpans.forEach(el => el.style.background = '');
@@ -384,7 +508,7 @@ function skipSentence(forward) {{
 
 </script>
 
-<div style="margin-top:1px;">
+<div class="audio-controls" style="margin-top:1px;">
     <button onclick="skipSentence(false)">⏪ Prev</button>
     <button onclick="togglePauseResume()">⏯️ Pause/Resume</button>
     <button onclick="skipSentence(true)">Next ⏩</button>

@@ -10,3 +10,4 @@ mammoth
 markdown
 striprtf
 requests
+nest_asyncio
