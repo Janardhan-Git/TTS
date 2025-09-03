@@ -191,7 +191,7 @@ if input_mode == "Type Text":
     user_text = st.text_area("Enter Text to Convert to Speech", height=200)
 else:
     uploaded_file = st.file_uploader(
-        "Upload a text file", type=["txt", "pdf", "doc", "docx", "md", "rtf"]
+        "Upload a text file", type=["txt", "pdf", "doc", "docx", "md", "json", "rtf"]
     )
     if uploaded_file is not None:
         file_type = uploaded_file.name.split(".")[-1].lower()
@@ -232,10 +232,10 @@ def apply_pronunciations(text, pronunciations):
         text = text.replace(word, pron)
     return text
 
-# Clean text for TTS
 def clean_text(text):
-    # Support broader Unicode range for multilingual text
-    return re.sub(r"[^\w\s\u0020-\uFFFF.,!?;:'\"()%+$@-]", "", text)
+    # Keep only letters, numbers, spaces, and basic punctuation
+    text = re.sub(r'[^\w\s.,!?;:\'\"()\-]', '', text)
+    return text
 
 # Async TTS Generation
 async def generate_speech(text, voice, rate, output_file):
