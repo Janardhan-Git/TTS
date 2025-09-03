@@ -12,3 +12,4 @@ striprtf
 requests
 nest_asyncio
 pydub
+pyaudio
