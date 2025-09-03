@@ -15,6 +15,7 @@ from striprtf.striprtf import rtf_to_text
 from langdetect import detect, LangDetectException
 import base64
 import nest_asyncio
+from pydub import AudioSegment
 
 # Apply nest_asyncio to allow nested event loops
 nest_asyncio.apply()
@@ -107,6 +108,14 @@ st.sidebar.header("🔧 Settings")
 voice = st.sidebar.selectbox("Select Voice", list(voice_options.keys()))
 rate = st.sidebar.selectbox("Select Speed", list(speed_map.keys()))
 
+# Browser Voice Selection
+browser_voice_options = {
+    "English": "Microsoft Mark - English (United States)",
+    "Telugu": "Microsoft Telugu Voice"  # Adjust if needed, as local voices vary
+}
+default_browser_voice = browser_voice_options.get("English" if voice.startswith("English") else "Telugu", "")
+browser_voice = st.sidebar.text_input("Browser Voice Name (for Read Aloud)", value=default_browser_voice)
+
 # Pronunciation Editor
 PRON_FILE = "pronunciations.json"
 pronunciations = load_json(PRON_FILE, {})
@@ -139,7 +148,7 @@ def extract_text_from_file(uploaded_file, file_type):
         elif file_type == "docx":
             document_obj = docx.Document(uploaded_file)
             return "\n".join([para.text for para in document_obj.paragraphs])
-        elif file_type == "doc":
+        elif personally_type == "doc":
             result = mammoth.convert_to_markdown(uploaded_file)
             return result.value
         elif file_type == "md":
@@ -201,10 +210,6 @@ else:
 if "loaded_text" in st.session_state and st.session_state["loaded_text"]:
     user_text = st.session_state["loaded_text"]
 
-# Display preview if text is available
-if user_text:
-    st.text_area("📄 Preview Text", user_text, height=200, disabled=True)
-
 # Save to history
 if user_text and st.button("📌 Save to History"):
     if user_text not in history:
@@ -233,18 +238,19 @@ def apply_pronunciations(text, pronunciations):
     return text
 
 def clean_text(text):
-    # Keep only letters, numbers, spaces, and basic punctuation
-    text = re.sub(r'[^\w\s.,!?;:\'\"()\-]', '', text)
+    # Keep letters, numbers, spaces, basic punctuation, and specific symbols (-, +)
+    # Remove #, *, and other unwanted symbols
+    text = re.sub(r'[#*]', '', text)
     return text
 
-# Async TTS Generation
-async def generate_speech(text, voice, rate, output_file):
+# Async TTS Generation for a single chunk
+async def generate_speech_chunk(text, voice, rate, output_file):
     try:
         communicate = edge_tts.Communicate(text=text, voice=voice, rate=rate)
         await communicate.save(output_file)
         return True
     except Exception as e:
-        st.error(f"❌ Failed to generate audio: {str(e)}")
+        st.error(f"❌ Failed to generate audio chunk: {str(e)}")
         st.code(f"Voice: {voice}\nRate: {rate}\nText: {text[:200]}")
         return False
 
@@ -257,6 +263,22 @@ def run_async(coro):
     finally:
         loop.close()
 
+# Split text into chunks (e.g., by sentences, aiming for ~5000 chars per chunk to avoid limits)
+def split_text_into_chunks(text, max_chars=5000):
+    chunks = []
+    current_chunk = ""
+    sentences = re.split(r'(?<=[.!?]) +', text)
+    for sentence in sentences:
+        if len(current_chunk) + len(sentence) > max_chars:
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+            current_chunk = sentence
+        else:
+            current_chunk += " " + sentence
+    if current_chunk:
+        chunks.append(current_chunk.strip())
+    return chunks
+
 # Process and generate speech
 if user_text:
     # Validate language
@@ -268,13 +290,28 @@ if user_text:
 
     if st.button("🎧 Convert to Speech"):
         output_file = f"{uuid.uuid4().hex}.mp3"
+        temp_files = []
         try:
             with st.spinner("Generating audio... Please wait ⏳"):
-                # Run async task using helper function
-                success = run_async(
-                    generate_speech(cleaned_text, voice_options[voice], speed_map[rate], output_file)
-                )
-            if success:
+                chunks = split_text_into_chunks(cleaned_text)
+                for i, chunk in enumerate(chunks):
+                    temp_file = f"temp_{i}_{uuid.uuid4().hex}.mp3"
+                    success = run_async(
+                        generate_speech_chunk(chunk, voice_options[voice], speed_map[rate], temp_file)
+                    )
+                    if success:
+                        temp_files.append(temp_file)
+                    else:
+                        raise Exception("Failed to generate one or more audio chunks")
+
+                # Concatenate all temp files
+                if temp_files:
+                    combined = AudioSegment.empty()
+                    for temp in temp_files:
+                        combined += AudioSegment.from_mp3(temp)
+                    combined.export(output_file, format="mp3")
+
+            if os.path.exists(output_file):
                 st.success("✅ Conversion Complete!")
                 try:
                     with open(output_file, "rb") as audio_file:
@@ -287,8 +324,8 @@ if user_text:
                                 Your browser does not support the audio element.
                             </audio>
                             <div class="audio-controls" style="margin-top:8px;">
-                                <button onclick="var a=document.getElementById('tts-audio'); a.currentTime=Math.max(0,a.currentTime-10);">⏪ 10s</button>
-                                <button onclick="var a=document.getElementById('tts-audio'); a.currentTime=Math.min(a.duration,a.currentTime+10);">10s ⏩</button>
+                                <button onclick="var a=document.getElementById('tts-audio'); if (!isNaN(a.currentTime)) a.currentTime=Math.max(0,a.currentTime-10);">⏪ 10s</button>
+                                <button onclick="var a=document.getElementById('tts-audio'); if (!isNaN(a.currentTime) && !isNaN(a.duration)) a.currentTime=Math.min(a.duration,a.currentTime+10);">10s ⏩</button>
                             </div>
                             """,
                             unsafe_allow_html=True,
@@ -302,6 +339,13 @@ if user_text:
                 except Exception as e:
                     st.error(f"Error reading audio file: {e}")
         finally:
+            # Clean up temp files
+            for temp in temp_files:
+                if os.path.exists(temp):
+                    try:
+                        os.remove(temp)
+                    except Exception as e:
+                        st.warning(f"Failed to clean up temp file: {e}")
             if os.path.exists(output_file):
                 try:
                     os.remove(output_file)
@@ -312,8 +356,7 @@ if user_text:
 if user_text and st.button("🗣️ Read Aloud in Browser"):
     cleaned_text = clean_text(user_text)
     escaped_text = cleaned_text.replace('"', '\\"').replace("\n", " ")
-    # Map selected voice to a browser-compatible voice if possible
-    browser_voice = "Microsoft Mark - English (United States)" if voice.startswith("English") else None
+    # Use the selected browser voice
     html_code = f"""
     <script>
     let utterance = null;
@@ -325,7 +368,7 @@ if user_text and st.button("🗣️ Read Aloud in Browser"):
     function speakText() {{
         utterance = new SpeechSynthesisUtterance(text);
         let allVoices = speechSynthesis.getVoices();
-        const preferredVoiceName = "{browser_voice or ''}";
+        const preferredVoiceName = "{browser_voice}";
         const matchedVoice = preferredVoiceName ? allVoices.find(v => v.name === preferredVoiceName) : allVoices[0];
         if (matchedVoice) utterance.voice = matchedVoice;
         utterance.rate = {rate_map[rate]};
@@ -366,7 +409,7 @@ if user_text and st.button("🗣️ Read Aloud in Browser"):
         let newText = words.slice(wordIndex).join(' ');
         utterance = new SpeechSynthesisUtterance(newText);
         let allVoices = speechSynthesis.getVoices();
-        const preferredVoiceName = "{browser_voice or ''}";
+        const preferredVoiceName = "{browser_voice}";
         const matchedVoice = preferredVoiceName ? allVoices.find(v => v.name === preferredVoiceName) : allVoices[0];
         if (matchedVoice) utterance.voice = matchedVoice;
         utterance.rate = {rate_map[rate]};
@@ -469,7 +512,8 @@ function speakSentence(sentence) {{
     let remainingSentences = allSpans.slice(startIndex).map(el => el.textContent).join(' ');
     sentenceUtterance = new SpeechSynthesisUtterance(remainingSentences);
 
-    const matched = cachedVoices.find(v => v.name.includes("English") || v.name.includes("Telugu")) || cachedVoices[0];
+    const preferredVoiceName = "{browser_voice}";
+    const matched = cachedVoices.find(v => v.name === preferredVoiceName) || cachedVoices[0];
     sentenceUtterance.voice = matched;
     sentenceUtterance.lang = matched.lang;
     sentenceUtterance.rate = {rate_map[rate]};
@@ -526,3 +570,4 @@ function skipSentence(forward) {{
 
 st.markdown("---")
 st.caption("🔊 Built with ❤️ by Jana using Edge-TTS and Streamlit")
+
