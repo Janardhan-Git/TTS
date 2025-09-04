@@ -148,7 +148,7 @@ def extract_text_from_file(uploaded_file, file_type):
         elif file_type == "docx":
             document_obj = docx.Document(uploaded_file)
             return "\n".join([para.text for para in document_obj.paragraphs])
-        elif file_type == "doc":
+        elif personally_type == "doc":
             result = mammoth.convert_to_markdown(uploaded_file)
             return result.value
         elif file_type == "md":
@@ -185,7 +185,7 @@ if history:
         st.session_state.pop("loaded_text", None)
         st.sidebar.success("History cleared!")
 else:
-    st.sidebar.info("No history available.")
+    st.sidebar.write("No history available.")
 
 # Clear Loaded Text Button
 if "loaded_text" in st.session_state and st.sidebar.button("🧹 Clear Loaded Text"):
@@ -570,3 +570,4 @@ function skipSentence(forward) {{
 
 st.markdown("---")
 st.caption("🔊 Built with ❤️ by Jana using Edge-TTS and Streamlit")
+
