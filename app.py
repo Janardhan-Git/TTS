@@ -5,8 +5,6 @@ import os
 import uuid
 import re
 import json
-import streamlit.components.v1 as components
-from streamlit_lottie import st_lottie
 import docx
 import mammoth
 import markdown
@@ -16,13 +14,14 @@ from langdetect import detect, LangDetectException
 import base64
 import nest_asyncio
 from pydub import AudioSegment
-from gtts import gTTS  # Fallback TTS
-import io  # For in-memory gTTS
+from gtts import gTTS
+import requests
+import time
 
 # Apply nest_asyncio to allow nested event loops
 nest_asyncio.apply()
 
-# Utility Functions (unchanged)
+# Utility Functions
 def load_json(file, default):
     if os.path.exists(file):
         try:
@@ -40,26 +39,38 @@ def save_json(file, data):
     except Exception as e:
         st.error(f"Failed to save {file}: {e}")
 
-def load_lottie(filepath):
+# File Text Extraction
+def extract_text_from_file(uploaded_file, file_type):
     try:
-        with open(filepath, "r") as f:
-            return json.load(f)
+        if file_type == "txt":
+            return uploaded_file.read().decode("utf-8")
+        elif file_type == "pdf":
+            reader = PyPDF2.PdfReader(uploaded_file)
+            return "\n".join(page.extract_text() for page in reader.pages if page.extract_text())
+        elif file_type == "docx":
+            document_obj = docx.Document(uploaded_file)
+            return "\n".join([para.text for para in document_obj.paragraphs])
+        elif file_type == "doc":
+            result = mammoth.convert_to_markdown(uploaded_file)
+            return result.value
+        elif file_type == "md":
+            raw_md = uploaded_file.read().decode("utf-8")
+            return markdown.markdown(raw_md)
+        elif file_type == "rtf":
+            raw_rtf = uploaded_file.read().decode("utf-8")
+            return rtf_to_text(raw_rtf)
+        return ""
     except Exception as e:
-        st.error(f"Failed to load animation: {e}")
-        return None
+        st.error(f"Error processing file: {e}")
+        return ""
 
-# Streamlit Page Configuration (unchanged)
+# Streamlit Page Configuration
 st.set_page_config(
     page_title="Text to Speech with Edge-TTS", layout="centered", page_icon="🗣️"
 )
 st.title("🗣️ Text-to-Speech App with Edge-TTS")
 
-# Load and display Lottie animation (unchanged)
-lottie_animation = load_lottie("assets/animation.json")
-if lottie_animation:
-    st_lottie(lottie_animation, height=150, key="header_animation")
-
-# Custom CSS for styling (unchanged)
+# Custom CSS for styling
 st.markdown(
     """
     <style>
@@ -87,15 +98,12 @@ st.markdown(
         margin: 0 5px;
         cursor: pointer;
     }
-    .sentence:hover {
-        background-color: #f0f0f0;
-    }
     </style>
 """,
     unsafe_allow_html=True,
 )
 
-# Voice and Speed Options (unchanged)
+# Voice and Speed Options
 voice_options = {
     "English - Female": "en-US-JennyNeural",
     "English - Male": "en-US-GuyNeural",
@@ -105,20 +113,12 @@ voice_options = {
 speed_map = {"Fast": "+25%", "Normal": "+0%", "Slow": "-25%"}
 rate_map = {"Fast": 1.25, "Normal": 1.0, "Slow": 0.75}
 
-# Sidebar Settings (unchanged)
+# Sidebar Settings
 st.sidebar.header("🔧 Settings")
 voice = st.sidebar.selectbox("Select Voice", list(voice_options.keys()))
 rate = st.sidebar.selectbox("Select Speed", list(speed_map.keys()))
 
-# Browser Voice Selection (unchanged)
-browser_voice_options = {
-    "English": "Microsoft Mark - English (United States)",
-    "Telugu": "Microsoft Telugu Voice"  # Adjust if needed, as local voices vary
-}
-default_browser_voice = browser_voice_options.get("English" if voice.startswith("English") else "Telugu", "")
-browser_voice = st.sidebar.text_input("Browser Voice Name (for Read Aloud)", value=default_browser_voice)
-
-# Pronunciation Editor (unchanged)
+# Pronunciation Editor
 PRON_FILE = "pronunciations.json"
 pronunciations = load_json(PRON_FILE, {})
 
@@ -137,64 +137,7 @@ if pronunciations:
     for word, pron in pronunciations.items():
         st.sidebar.write(f"- **{word}** → {pron}")
 
-# File Text Extraction (FIXED TYPO: personally_type -> file_type)
-def extract_text_from_file(uploaded_file, file_type):
-    try:
-        if file_type == "txt":
-            return uploaded_file.read().decode("utf-8")
-        elif file_type == "pdf":
-            reader = PyPDF2.PdfReader(uploaded_file)
-            return "\n".join(
-                page.extract_text() for page in reader.pages if page.extract_text()
-            )
-        elif file_type == "docx":
-            document_obj = docx.Document(uploaded_file)
-            return "\n".join([para.text for para in document_obj.paragraphs])
-        elif file_type == "doc":  # Fixed: was personally_type
-            result = mammoth.convert_to_markdown(uploaded_file)
-            return result.value
-        elif file_type == "md":
-            raw_md = uploaded_file.read().decode("utf-8")
-            return markdown.markdown(raw_md)
-        elif file_type == "rtf":
-            raw_rtf = uploaded_file.read().decode("utf-8")
-            return rtf_to_text(raw_rtf)
-        return ""
-    except Exception as e:
-        st.error(f"Error processing file: {e}")
-        return ""
-
-# History Management (unchanged)
-HISTORY_FILE = "history.json"
-history = load_json(HISTORY_FILE, [])
-
-st.sidebar.subheader("📝 History of Texts")
-if history:
-    selected_history = st.sidebar.selectbox(
-        "Pick a saved text", ["Select a text..."] + history
-    )
-    if (
-        selected_history != "Select a text..."
-        and st.sidebar.button("🔄 Load from History")
-    ):
-        st.session_state["loaded_text"] = selected_history
-        st.sidebar.success("Loaded from history!")
-
-    # Clear History Button
-    if st.sidebar.button("🗑️ Clear History"):
-        history.clear()
-        save_json(HISTORY_FILE, [])
-        st.session_state.pop("loaded_text", None)
-        st.sidebar.success("History cleared!")
-else:
-    st.sidebar.write("No history available.")
-
-# Clear Loaded Text Button (unchanged)
-if "loaded_text" in st.session_state and st.sidebar.button("🧹 Clear Loaded Text"):
-    st.session_state.pop("loaded_text", None)
-    st.sidebar.success("Loaded text cleared!")
-
-# Input Handling (unchanged)
+# Input Handling
 input_mode = st.radio("Choose Input Type", ["Type Text", "Upload File"])
 user_text = ""
 
@@ -208,18 +151,7 @@ else:
         file_type = uploaded_file.name.split(".")[-1].lower()
         user_text = extract_text_from_file(uploaded_file, file_type)
 
-# Load from session state if available (unchanged)
-if "loaded_text" in st.session_state and st.session_state["loaded_text"]:
-    user_text = st.session_state["loaded_text"]
-
-# Save to history (unchanged)
-if user_text and st.button("📌 Save to History"):
-    if user_text not in history:
-        history.append(user_text)
-        save_json(HISTORY_FILE, history)
-        st.success("✅ Text saved to history")
-
-# Language Detection and Voice Validation (unchanged)
+# Language Detection and Voice Validation
 def validate_language_and_voice(text, selected_voice):
     try:
         lang = detect(text)
@@ -233,61 +165,60 @@ def validate_language_and_voice(text, selected_voice):
         st.sidebar.warning("⚠️ Could not detect language")
         return None
 
-# Apply pronunciations once (unchanged)
+# Apply pronunciations once
 def apply_pronunciations(text, pronunciations):
     for word, pron in pronunciations.items():
         text = text.replace(word, pron)
     return text
 
 def clean_text(text):
-    # Keep letters, numbers, spaces, basic punctuation, and specific symbols (-, +)
-    # Remove #, *, and other unwanted symbols
     text = re.sub(r'[#*]', '', text)
     return text
 
-# UPDATED: Async TTS Generation with retry, fallback, and validation
-async def generate_speech_chunk(text, voice, rate, output_file, lang="en"):
-    try:
-        communicate = edge_tts.Communicate(text=text, voice=voice, rate=rate)
-        await communicate.save(output_file)
-        
-        # Validate: Check if file exists and has size > 0
-        if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
-            st.info(f"✅ Chunk generated with edge_tts: {len(text)} chars")
-            return True, "edge_tts"
-        else:
-            raise edge_tts.exceptions.NoAudioReceived("Empty file from edge_tts")
+# Async TTS Generation with retries and fallback
+async def generate_speech_chunk(text, voice, rate, output_file, lang="en", max_retries=2):
+    for attempt in range(max_retries + 1):
+        try:
+            response = requests.get("https://www.bing.com", timeout=5)
+            if response.status_code != 200:
+                st.error(f"❌ Network test failed with status {response.status_code}")
+                raise Exception("Network connectivity issue")
+
+            communicate = edge_tts.Communicate(text=text, voice=voice, rate=rate)
+            await communicate.save(output_file)
             
-    except Exception as e:
-        if "NoAudioReceived" in str(e):
-            st.warning(f"⚠️ edge_tts failed for chunk ({str(e)[:100]}...). Retrying with fallback...")
-            
-            # Retry once with different params (e.g., slower rate, fallback voice)
-            try:
-                fallback_voice = "en-US-AriaNeural" if "en" in lang else "te-IN-SruthikaNeural"
-                fallback_rate = "-10%"  # Slightly slower
-                communicate = edge_tts.Communicate(text=text, voice=fallback_voice, rate=fallback_rate)
-                await communicate.save(output_file)
+            if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+                st.info(f"✅ Chunk generated with edge_tts (Attempt {attempt + 1}): {len(text)} chars")
+                return True, "edge_tts"
+            else:
+                raise edge_tts.exceptions.NoAudioReceived("Empty file from edge_tts")
                 
-                if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
-                    st.info(f"✅ Chunk generated with edge_tts retry: {len(text)} chars")
-                    return True, "edge_tts_retry"
-                else:
-                    raise edge_tts.exceptions.NoAudioReceived("Empty file on retry")
-            except:
-                # Final fallback: Use gTTS (Google TTS)
-                st.info(f"🔄 Falling back to gTTS for chunk: {len(text)} chars")
+        except edge_tts.exceptions.NoAudioReceived as e:
+            st.warning(f"⚠️ edge_tts failed (Attempt {attempt + 1}/{max_retries + 1}): {str(e)[:100]}")
+            if attempt < max_retries:
+                time.sleep(2 ** attempt)
+                fallback_voice = "en-US-AriaNeural" if "en" in lang else "te-IN-SruthikaNeural"
+                fallback_rate = "-10%" if attempt == 0 else "+0%"
+                st.info(f"🔄 Retrying with voice={fallback_voice}, rate={fallback_rate}")
+                continue
+            else:
+                st.info(f"🔄 Falling back to gTTS (Attempt {attempt + 1}): {len(text)} chars")
                 tts = gTTS(text=text, lang=lang, slow=False)
                 tts.save(output_file)
                 
                 if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
                     return True, "gtts"
                 else:
-                    raise Exception(f"gTTS also failed: Empty file")
-        else:
-            raise e  # Re-raise other errors
+                    raise Exception(f"gTTS failed: Empty file")
+                    
+        except Exception as e:
+            st.error(f"❌ Unexpected error in attempt {attempt + 1}: {str(e)[:100]}")
+            if attempt < max_retries:
+                time.sleep(2 ** attempt)
+                continue
+            raise
 
-# Helper function to run async code safely in Streamlit (unchanged)
+# Helper function to run async code safely
 def run_async(coro):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -296,8 +227,8 @@ def run_async(coro):
     finally:
         loop.close()
 
-# UPDATED: Split text into chunks (improved boundary handling)
-def split_text_into_chunks(text, max_chars=4000):  # Reduced to 4000 for safety
+# Split text into chunks
+def split_text_into_chunks(text, max_chars=4000):
     chunks = []
     current_chunk = ""
     sentences = re.split(r'(?<=[.!?]) +', text)
@@ -313,12 +244,9 @@ def split_text_into_chunks(text, max_chars=4000):  # Reduced to 4000 for safety
         chunks.append(current_chunk.strip())
     return chunks
 
-# Process and generate speech (UPDATED: Better handling, no hard raise)
+# Process and generate speech
 if user_text:
-    # Validate language
     lang = validate_language_and_voice(user_text, voice) or "en"
-    
-    # Apply pronunciations
     processed_text = apply_pronunciations(user_text, pronunciations)
     cleaned_text = clean_text(processed_text)
 
@@ -349,7 +277,6 @@ if user_text:
                     st.error("❌ All chunks failed. Check network or try shorter text.")
                     st.stop()
 
-                # Concatenate valid temp files
                 if temp_files:
                     combined = AudioSegment.empty()
                     for temp in temp_files:
@@ -387,225 +314,11 @@ if user_text:
             else:
                 st.error("❌ Final audio file is empty. Try again or use shorter text.")
         finally:
-            # Clean up
             for temp in temp_files:
                 if os.path.exists(temp):
                     os.remove(temp)
             if os.path.exists(output_file) and "audio_bytes" not in locals():
                 os.remove(output_file)
-
-# Browser-based TTS (unchanged - your JS code)
-if user_text and st.button("🗣️ Read Aloud in Browser"):
-    cleaned_text = clean_text(user_text)
-    escaped_text = cleaned_text.replace('"', '\\"').replace("\n", " ")
-    html_code = f"""
-    <script>
-    let utterance = null;
-    let wordIndex = 0;
-    let words = [];
-    let spans = [];
-    let text = `{escaped_text}`;
-    function speakText() {{
-        utterance = new SpeechSynthesisUtterance(text);
-        let allVoices = speechSynthesis.getVoices();
-        const preferredVoiceName = "{browser_voice}";
-        const matchedVoice = preferredVoiceName ? allVoices.find(v => v.name === preferredVoiceName) : allVoices[0];
-        if (matchedVoice) utterance.voice = matchedVoice;
-        utterance.rate = {rate_map[rate]};
-
-        const container = document.getElementById("highlighted-text");
-        words = text.split(/\\s+/);
-        container.innerHTML = words.map(w => `<span class='word'>${{w}}</span>`).join(" ");
-        spans = container.querySelectorAll(".word");
-        wordIndex = 0;
-
-        utterance.onboundary = (event) => {{
-            if (event.name === 'word') {{
-                spans.forEach(span => span.style.background = '');
-                if (spans[wordIndex]) {{
-                    spans[wordIndex].style.background = 'yellow';
-                    wordIndex++;
-                }}
-            }}
-        }};
-
-        utterance.onend = () => {{
-            spans.forEach(span => span.style.background = '');
-            wordIndex = 0;
-        }};
-
-        speechSynthesis.speak(utterance);
-    }}
-
-    function skip10s(forward) {{
-        if (!utterance) return;
-        speechSynthesis.pause();
-        if (forward) {{
-            wordIndex = Math.min(words.length-1, wordIndex+20);
-        }} else {{
-            wordIndex = Math.max(0, wordIndex-20);
-        }}
-        speechSynthesis.cancel();
-        let newText = words.slice(wordIndex).join(' ');
-        utterance = new SpeechSynthesisUtterance(newText);
-        let allVoices = speechSynthesis.getVoices();
-        const preferredVoiceName = "{browser_voice}";
-        const matchedVoice = preferredVoiceName ? allVoices.find(v => v.name === preferredVoiceName) : allVoices[0];
-        if (matchedVoice) utterance.voice = matchedVoice;
-        utterance.rate = {rate_map[rate]};
-        utterance.onboundary = (event) => {{
-            if (event.name === 'word') {{
-                spans.forEach(span => span.style.background = '');
-                if (spans[wordIndex]) {{
-                    spans[wordIndex].style.background = 'yellow';
-                    wordIndex++;
-                }}
-            }}
-        }};
-        utterance.onend = () => {{
-            spans.forEach(span => span.style.background = '');
-            wordIndex = 0;
-        }};
-
-        speechSynthesis.speak(utterance);
-    }}
-
-    function togglePauseResume() {{
-        if (!window.speechSynthesis || !utterance) return;
-        if (speechSynthesis.speaking && !speechSynthesis.paused) {{
-            speechSynthesis.pause();
-        }} else if (speechSynthesis.paused) {{
-            speechSynthesis.resume();
-        }}
-    }}
-
-    window.onload = function() {{
-        speechSynthesis.onvoiceschanged = () => speakText();
-    }};
-    </script>
-    <style>
-    #highlighted-text {{ font-size: 18px; line-height: 1.6; margin-top: 10px; }}
-    .word {{ padding: 2px; margin-right: 2px; }}
-    </style>
-    <div id="highlighted-text"></div>
-    <div class="audio-controls" style="margin-top:8px;">
-        <button onclick="skip10s(false)">⏪ 10s</button>
-        <button onclick="togglePauseResume()">⏯️ Pause/Resume</button>
-        <button onclick="skip10s(true)">10s ⏩</button>
-    </div>
-    """
-    components.html(html_code)
-
-# Sentence-by-Sentence Reading (unchanged - your JS code)
-if user_text:
-    cleaned_text = clean_text(user_text)
-    escaped_sentences = re.split(r"(?<=[.!?]) +", cleaned_text.replace("\n", " "))
-    js_sentence_click = """
-    <div id="sentence-text" style="line-height: 2; padding: 10px; max-height: 300px; overflow-y: auto;">
-    """
-    for sentence in escaped_sentences:
-        clean_sent = sentence.strip().replace('"', '\\"')
-        js_sentence_click += (
-            f"<span class='sentence' onclick='speakSentence(\"{clean_sent}\")' style='cursor:pointer; display:block; padding:5px; margin-bottom:8px; border:1px solid #ccc; border-radius:6px;'>"
-            + sentence
-            + "</span>"
-        )
-    js_sentence_click += "</div>"
-
-    js_sentence_click += f"""
-<script>
-let synth = window.speechSynthesis;
-let sentenceUtterance = null;
-let voicesLoaded = false;
-let cachedVoices = [];
-
-function loadVoices() {{
-    return new Promise(resolve => {{
-        let voices = synth.getVoices();
-        if (voices.length !== 0) {{
-            voicesLoaded = true;
-            cachedVoices = voices;
-            resolve(voices);
-        }} else {{
-            synth.onvoiceschanged = () => {{
-                voicesLoaded = true;
-                cachedVoices = synth.getVoices();
-                resolve(cachedVoices);
-            }};
-        }}
-    }});
-}}
-
-function speakSentence(sentence) {{
-    if (!voicesLoaded) {{
-        loadVoices().then(() => speakSentence(sentence));
-        return;
-    }}
-
-    synth.cancel();
-
-    let allSpans = Array.from(document.querySelectorAll('.sentence'));
-    let startIndex = allSpans.findIndex(el => el.textContent.trim() === sentence.trim());
-    if (startIndex === -1) return;
-
-    let remainingSentences = allSpans.slice(startIndex).map(el => el.textContent).join(' ');
-    sentenceUtterance = new SpeechSynthesisUtterance(remainingSentences);
-
-    const preferredVoiceName = "{browser_voice}";
-    const matched = cachedVoices.find(v => v.name === preferredVoiceName) || cachedVoices[0];
-    sentenceUtterance.voice = matched;
-    sentenceUtterance.lang = matched.lang;
-    sentenceUtterance.rate = {rate_map[rate]};
-
-    allSpans.forEach(el => el.style.background = '');
-    if (allSpans[startIndex]) {{
-        allSpans[startIndex].style.background = 'yellow';
-        allSpans[startIndex].scrollIntoView({{ behavior: 'smooth', block: 'center' }});
-    }}
-
-    sentenceUtterance.onend = () => {{
-        allSpans.forEach(el => el.style.background = '');
-        sentenceUtterance = null;
-    }};
-
-    synth.speak(sentenceUtterance);
-}}
-
-function togglePauseResume() {{
-    if (!window.speechSynthesis || !sentenceUtterance) return;
-    if (synth.speaking && !synth.paused) {{
-        synth.pause();
-    }} else if (synth.paused) {{
-        synth.resume();
-    }}
-}}
-
-function skipSentence(forward) {{
-    let sentences = Array.from(document.querySelectorAll('.sentence'));
-    let current = sentences.findIndex(el => el.style.background === 'yellow');
-    let next = forward ? Math.min(sentences.length-1, current+1) : Math.max(0, current-1);
-    if (next !== -1 && next !== current) {{
-        sentences[next].click();
-    }}
-}}
-
-</script>
-
-<div class="audio-controls" style="margin-top:1px;">
-    <button onclick="skipSentence(false)">⏪ Prev</button>
-    <button onclick="togglePauseResume()">⏯️ Pause/Resume</button>
-    <button onclick="skipSentence(true)">Next ⏩</button>
-</div>
-
-<style>
-.sentence:hover {{
-    background-color: #f0f0f0;
-}}
-</style>
-"""
-
-    st.markdown("### 📌 Click a sentence to read it aloud")
-    components.html(js_sentence_click, height=350)
 
 st.markdown("---")
 st.caption("🔊 Built with ❤️ by Jana using Edge-TTS and Streamlit (with gTTS fallback)")
