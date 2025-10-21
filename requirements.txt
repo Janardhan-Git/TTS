@@ -1,7 +1,7 @@
 streamlit>=1.24.0
 edge-tts
 pydub
-audioop-lts
+audioop-lts  # For pydub on Python 3.13
 streamlit-lottie
 python-docx
 mammoth
@@ -10,3 +10,4 @@ PyPDF2
 striprtf
 langdetect
 nest_asyncio
+gtts  # Fallback TTS

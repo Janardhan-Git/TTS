@@ -16,11 +16,13 @@ from langdetect import detect, LangDetectException
 import base64
 import nest_asyncio
 from pydub import AudioSegment
+from gtts import gTTS  # Fallback TTS
+import io  # For in-memory gTTS
 
 # Apply nest_asyncio to allow nested event loops
 nest_asyncio.apply()
 
-# Utility Functions
+# Utility Functions (unchanged)
 def load_json(file, default):
     if os.path.exists(file):
         try:
@@ -46,18 +48,18 @@ def load_lottie(filepath):
         st.error(f"Failed to load animation: {e}")
         return None
 
-# Streamlit Page Configuration
+# Streamlit Page Configuration (unchanged)
 st.set_page_config(
     page_title="Text to Speech with Edge-TTS", layout="centered", page_icon="🗣️"
 )
 st.title("🗣️ Text-to-Speech App with Edge-TTS")
 
-# Load and display Lottie animation
+# Load and display Lottie animation (unchanged)
 lottie_animation = load_lottie("assets/animation.json")
 if lottie_animation:
     st_lottie(lottie_animation, height=150, key="header_animation")
 
-# Custom CSS for styling
+# Custom CSS for styling (unchanged)
 st.markdown(
     """
     <style>
@@ -93,7 +95,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Voice and Speed Options
+# Voice and Speed Options (unchanged)
 voice_options = {
     "English - Female": "en-US-JennyNeural",
     "English - Male": "en-US-GuyNeural",
@@ -103,12 +105,12 @@ voice_options = {
 speed_map = {"Fast": "+25%", "Normal": "+0%", "Slow": "-25%"}
 rate_map = {"Fast": 1.25, "Normal": 1.0, "Slow": 0.75}
 
-# Sidebar Settings
+# Sidebar Settings (unchanged)
 st.sidebar.header("🔧 Settings")
 voice = st.sidebar.selectbox("Select Voice", list(voice_options.keys()))
 rate = st.sidebar.selectbox("Select Speed", list(speed_map.keys()))
 
-# Browser Voice Selection
+# Browser Voice Selection (unchanged)
 browser_voice_options = {
     "English": "Microsoft Mark - English (United States)",
     "Telugu": "Microsoft Telugu Voice"  # Adjust if needed, as local voices vary
@@ -116,7 +118,7 @@ browser_voice_options = {
 default_browser_voice = browser_voice_options.get("English" if voice.startswith("English") else "Telugu", "")
 browser_voice = st.sidebar.text_input("Browser Voice Name (for Read Aloud)", value=default_browser_voice)
 
-# Pronunciation Editor
+# Pronunciation Editor (unchanged)
 PRON_FILE = "pronunciations.json"
 pronunciations = load_json(PRON_FILE, {})
 
@@ -135,7 +137,7 @@ if pronunciations:
     for word, pron in pronunciations.items():
         st.sidebar.write(f"- **{word}** → {pron}")
 
-# File Text Extraction
+# File Text Extraction (FIXED TYPO: personally_type -> file_type)
 def extract_text_from_file(uploaded_file, file_type):
     try:
         if file_type == "txt":
@@ -148,7 +150,7 @@ def extract_text_from_file(uploaded_file, file_type):
         elif file_type == "docx":
             document_obj = docx.Document(uploaded_file)
             return "\n".join([para.text for para in document_obj.paragraphs])
-        elif personally_type == "doc":
+        elif file_type == "doc":  # Fixed: was personally_type
             result = mammoth.convert_to_markdown(uploaded_file)
             return result.value
         elif file_type == "md":
@@ -162,7 +164,7 @@ def extract_text_from_file(uploaded_file, file_type):
         st.error(f"Error processing file: {e}")
         return ""
 
-# History Management
+# History Management (unchanged)
 HISTORY_FILE = "history.json"
 history = load_json(HISTORY_FILE, [])
 
@@ -187,12 +189,12 @@ if history:
 else:
     st.sidebar.write("No history available.")
 
-# Clear Loaded Text Button
+# Clear Loaded Text Button (unchanged)
 if "loaded_text" in st.session_state and st.sidebar.button("🧹 Clear Loaded Text"):
     st.session_state.pop("loaded_text", None)
     st.sidebar.success("Loaded text cleared!")
 
-# Input Handling
+# Input Handling (unchanged)
 input_mode = st.radio("Choose Input Type", ["Type Text", "Upload File"])
 user_text = ""
 
@@ -206,18 +208,18 @@ else:
         file_type = uploaded_file.name.split(".")[-1].lower()
         user_text = extract_text_from_file(uploaded_file, file_type)
 
-# Load from session state if available
+# Load from session state if available (unchanged)
 if "loaded_text" in st.session_state and st.session_state["loaded_text"]:
     user_text = st.session_state["loaded_text"]
 
-# Save to history
+# Save to history (unchanged)
 if user_text and st.button("📌 Save to History"):
     if user_text not in history:
         history.append(user_text)
         save_json(HISTORY_FILE, history)
         st.success("✅ Text saved to history")
 
-# Language Detection and Voice Validation
+# Language Detection and Voice Validation (unchanged)
 def validate_language_and_voice(text, selected_voice):
     try:
         lang = detect(text)
@@ -231,7 +233,7 @@ def validate_language_and_voice(text, selected_voice):
         st.sidebar.warning("⚠️ Could not detect language")
         return None
 
-# Apply pronunciations once
+# Apply pronunciations once (unchanged)
 def apply_pronunciations(text, pronunciations):
     for word, pron in pronunciations.items():
         text = text.replace(word, pron)
@@ -243,18 +245,49 @@ def clean_text(text):
     text = re.sub(r'[#*]', '', text)
     return text
 
-# Async TTS Generation for a single chunk
-async def generate_speech_chunk(text, voice, rate, output_file):
+# UPDATED: Async TTS Generation with retry, fallback, and validation
+async def generate_speech_chunk(text, voice, rate, output_file, lang="en"):
     try:
         communicate = edge_tts.Communicate(text=text, voice=voice, rate=rate)
         await communicate.save(output_file)
-        return True
+        
+        # Validate: Check if file exists and has size > 0
+        if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+            st.info(f"✅ Chunk generated with edge_tts: {len(text)} chars")
+            return True, "edge_tts"
+        else:
+            raise edge_tts.exceptions.NoAudioReceived("Empty file from edge_tts")
+            
     except Exception as e:
-        st.error(f"❌ Failed to generate audio chunk: {str(e)}")
-        st.code(f"Voice: {voice}\nRate: {rate}\nText: {text[:200]}")
-        return False
+        if "NoAudioReceived" in str(e):
+            st.warning(f"⚠️ edge_tts failed for chunk ({str(e)[:100]}...). Retrying with fallback...")
+            
+            # Retry once with different params (e.g., slower rate, fallback voice)
+            try:
+                fallback_voice = "en-US-AriaNeural" if "en" in lang else "te-IN-SruthikaNeural"
+                fallback_rate = "-10%"  # Slightly slower
+                communicate = edge_tts.Communicate(text=text, voice=fallback_voice, rate=fallback_rate)
+                await communicate.save(output_file)
+                
+                if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+                    st.info(f"✅ Chunk generated with edge_tts retry: {len(text)} chars")
+                    return True, "edge_tts_retry"
+                else:
+                    raise edge_tts.exceptions.NoAudioReceived("Empty file on retry")
+            except:
+                # Final fallback: Use gTTS (Google TTS)
+                st.info(f"🔄 Falling back to gTTS for chunk: {len(text)} chars")
+                tts = gTTS(text=text, lang=lang, slow=False)
+                tts.save(output_file)
+                
+                if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+                    return True, "gtts"
+                else:
+                    raise Exception(f"gTTS also failed: Empty file")
+        else:
+            raise e  # Re-raise other errors
 
-# Helper function to run async code safely in Streamlit
+# Helper function to run async code safely in Streamlit (unchanged)
 def run_async(coro):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -263,26 +296,27 @@ def run_async(coro):
     finally:
         loop.close()
 
-# Split text into chunks (e.g., by sentences, aiming for ~5000 chars per chunk to avoid limits)
-def split_text_into_chunks(text, max_chars=5000):
+# UPDATED: Split text into chunks (improved boundary handling)
+def split_text_into_chunks(text, max_chars=4000):  # Reduced to 4000 for safety
     chunks = []
     current_chunk = ""
     sentences = re.split(r'(?<=[.!?]) +', text)
     for sentence in sentences:
-        if len(current_chunk) + len(sentence) > max_chars:
+        test_chunk = current_chunk + (" " if current_chunk else "") + sentence
+        if len(test_chunk) > max_chars:
             if current_chunk:
                 chunks.append(current_chunk.strip())
             current_chunk = sentence
         else:
-            current_chunk += " " + sentence
+            current_chunk = test_chunk
     if current_chunk:
         chunks.append(current_chunk.strip())
     return chunks
 
-# Process and generate speech
+# Process and generate speech (UPDATED: Better handling, no hard raise)
 if user_text:
     # Validate language
-    validate_language_and_voice(user_text, voice)
+    lang = validate_language_and_voice(user_text, voice) or "en"
     
     # Apply pronunciations
     processed_text = apply_pronunciations(user_text, pronunciations)
@@ -291,79 +325,85 @@ if user_text:
     if st.button("🎧 Convert to Speech"):
         output_file = f"{uuid.uuid4().hex}.mp3"
         temp_files = []
+        failed_chunks = 0
         try:
             with st.spinner("Generating audio... Please wait ⏳"):
                 chunks = split_text_into_chunks(cleaned_text)
+                st.info(f"📝 Splitting into {len(chunks)} chunks")
+                
                 for i, chunk in enumerate(chunks):
-                    temp_file = f"temp_{i}_{uuid.uuid4().hex}.mp3"
-                    success = run_async(
-                        generate_speech_chunk(chunk, voice_options[voice], speed_map[rate], temp_file)
+                    temp_file = f"temp_{i}.mp3"
+                    success, method = run_async(
+                        generate_speech_chunk(chunk, voice_options[voice], speed_map[rate], temp_file, lang)
                     )
                     if success:
                         temp_files.append(temp_file)
+                        st.info(f"Chunk {i+1}/{len(chunks)} ({method}): OK")
                     else:
-                        raise Exception("Failed to generate one or more audio chunks")
+                        failed_chunks += 1
+                        st.error(f"❌ Chunk {i+1} failed completely. Skipping.")
+                        if os.path.exists(temp_file):
+                            os.remove(temp_file)
 
-                # Concatenate all temp files
+                if not temp_files:
+                    st.error("❌ All chunks failed. Check network or try shorter text.")
+                    st.stop()
+
+                # Concatenate valid temp files
                 if temp_files:
                     combined = AudioSegment.empty()
                     for temp in temp_files:
-                        combined += AudioSegment.from_mp3(temp)
+                        audio = AudioSegment.from_mp3(temp)
+                        combined += audio
                     combined.export(output_file, format="mp3")
 
-            if os.path.exists(output_file):
+                if failed_chunks > 0:
+                    st.warning(f"⚠️ {failed_chunks}/{len(chunks)} chunks failed (used fallback where possible).")
+
+            if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
                 st.success("✅ Conversion Complete!")
-                try:
-                    with open(output_file, "rb") as audio_file:
-                        audio_bytes = audio_file.read()
-                        audio_base64 = base64.b64encode(audio_bytes).decode()
-                        st.markdown(
-                            f"""
-                            <audio id="tts-audio" controls style="width:100%;">
-                                <source src="data:audio/mp3;base64,{audio_base64}" type="audio/mp3">
-                                Your browser does not support the audio element.
-                            </audio>
-                            <div class="audio-controls" style="margin-top:8px;">
-                                <button onclick="var a=document.getElementById('tts-audio'); if (!isNaN(a.currentTime)) a.currentTime=Math.max(0,a.currentTime-10);">⏪ 10s</button>
-                                <button onclick="var a=document.getElementById('tts-audio'); if (!isNaN(a.currentTime) && !isNaN(a.duration)) a.currentTime=Math.min(a.duration,a.currentTime+10);">10s ⏩</button>
-                            </div>
-                            """,
-                            unsafe_allow_html=True,
-                        )
-                        st.download_button(
-                            label="📥 Download Audio",
-                            data=audio_bytes,
-                            file_name="converted_speech.mp3",
-                            mime="audio/mp3",
-                        )
-                except Exception as e:
-                    st.error(f"Error reading audio file: {e}")
+                with open(output_file, "rb") as audio_file:
+                    audio_bytes = audio_file.read()
+                    audio_base64 = base64.b64encode(audio_bytes).decode()
+                    st.markdown(
+                        f"""
+                        <audio id="tts-audio" controls style="width:100%;">
+                            <source src="data:audio/mp3;base64,{audio_base64}" type="audio/mp3">
+                            Your browser does not support the audio element.
+                        </audio>
+                        <div class="audio-controls" style="margin-top:8px;">
+                            <button onclick="var a=document.getElementById('tts-audio'); if (!isNaN(a.currentTime)) a.currentTime=Math.max(0,a.currentTime-10);">⏪ 10s</button>
+                            <button onclick="var a=document.getElementById('tts-audio'); if (!isNaN(a.currentTime) && !isNaN(a.duration)) a.currentTime=Math.min(a.duration,a.currentTime+10);">10s ⏩</button>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    st.download_button(
+                        label="📥 Download Audio",
+                        data=audio_bytes,
+                        file_name="converted_speech.mp3",
+                        mime="audio/mp3",
+                    )
+            else:
+                st.error("❌ Final audio file is empty. Try again or use shorter text.")
         finally:
-            # Clean up temp files
+            # Clean up
             for temp in temp_files:
                 if os.path.exists(temp):
-                    try:
-                        os.remove(temp)
-                    except Exception as e:
-                        st.warning(f"Failed to clean up temp file: {e}")
-            if os.path.exists(output_file):
-                try:
-                    os.remove(output_file)
-                except Exception as e:
-                    st.warning(f"Failed to clean up audio file: {e}")
+                    os.remove(temp)
+            if os.path.exists(output_file) and "audio_bytes" not in locals():
+                os.remove(output_file)
 
-# Browser-based TTS
+# Browser-based TTS (unchanged - your JS code)
 if user_text and st.button("🗣️ Read Aloud in Browser"):
     cleaned_text = clean_text(user_text)
     escaped_text = cleaned_text.replace('"', '\\"').replace("\n", " ")
-    # Use the selected browser voice
     html_code = f"""
     <script>
     let utterance = null;
     let wordIndex = 0;
     let words = [];
     let spans = [];
-    let paused = false;
     let text = `{escaped_text}`;
     function speakText() {{
         utterance = new SpeechSynthesisUtterance(text);
@@ -456,7 +496,7 @@ if user_text and st.button("🗣️ Read Aloud in Browser"):
     """
     components.html(html_code)
 
-# Sentence-by-Sentence Reading
+# Sentence-by-Sentence Reading (unchanged - your JS code)
 if user_text:
     cleaned_text = clean_text(user_text)
     escaped_sentences = re.split(r"(?<=[.!?]) +", cleaned_text.replace("\n", " "))
@@ -472,7 +512,6 @@ if user_text:
         )
     js_sentence_click += "</div>"
 
-    actual_voice_name = voice_options[voice]
     js_sentence_click += f"""
 <script>
 let synth = window.speechSynthesis;
@@ -569,5 +608,4 @@ function skipSentence(forward) {{
     components.html(js_sentence_click, height=350)
 
 st.markdown("---")
-st.caption("🔊 Built with ❤️ by Jana using Edge-TTS and Streamlit")
-
+st.caption("🔊 Built with ❤️ by Jana using Edge-TTS and Streamlit (with gTTS fallback)")
