@@ -1,6 +1,4 @@
 import streamlit as st
-import edge_tts
-import asyncio
 import os
 import uuid
 import re
@@ -15,10 +13,8 @@ import base64
 import nest_asyncio
 from pydub import AudioSegment
 from gtts import gTTS
-import requests
-import time
 
-# Apply nest_asyncio to allow nested event loops
+# Apply nest_asyncio to allow nested event loops (though not needed for gTTS sync calls)
 nest_asyncio.apply()
 
 # Utility Functions
@@ -66,9 +62,9 @@ def extract_text_from_file(uploaded_file, file_type):
 
 # Streamlit Page Configuration
 st.set_page_config(
-    page_title="Text to Speech with Edge-TTS", layout="centered", page_icon="🗣️"
+    page_title="Text to Speech with gTTS", layout="centered", page_icon="🗣️"
 )
-st.title("🗣️ Text-to-Speech App with Edge-TTS")
+st.title("🗣️ Text-to-Speech App with gTTS")
 
 # Custom CSS for styling
 st.markdown(
@@ -103,15 +99,14 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Voice and Speed Options
+# Voice and Speed Options (Updated for gTTS)
 voice_options = {
-    "English - Female": "en-US-JennyNeural",
-    "English - Male": "en-US-GuyNeural",
-    "Telugu - Male": "te-IN-MohanNeural",
-    "Telugu - Female": "te-IN-ShrutiNeural",
+    "English - Female (US)": "en-us",
+    "English - Male (US)": "en-us",
+    "Telugu - Female": "te-in",
+    "Telugu - Male": "te-in",
 }
-speed_map = {"Fast": "+25%", "Normal": "+0%", "Slow": "-25%"}
-rate_map = {"Fast": 1.25, "Normal": 1.0, "Slow": 0.75}
+speed_map = {"Fast": 1.25, "Normal": 1.0, "Slow": 0.75}
 
 # Sidebar Settings
 st.sidebar.header("🔧 Settings")
@@ -175,57 +170,24 @@ def clean_text(text):
     text = re.sub(r'[#*]', '', text)
     return text
 
-# Async TTS Generation with retries and fallback
-async def generate_speech_chunk(text, voice, rate, output_file, lang="en", max_retries=2):
-    for attempt in range(max_retries + 1):
-        try:
-            response = requests.get("https://www.bing.com", timeout=5)
-            if response.status_code != 200:
-                st.error(f"❌ Network test failed with status {response.status_code}")
-                raise Exception("Network connectivity issue")
-
-            communicate = edge_tts.Communicate(text=text, voice=voice, rate=rate)
-            await communicate.save(output_file)
-            
-            if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
-                st.info(f"✅ Chunk generated with edge_tts (Attempt {attempt + 1}): {len(text)} chars")
-                return True, "edge_tts"
-            else:
-                raise edge_tts.exceptions.NoAudioReceived("Empty file from edge_tts")
-                
-        except edge_tts.exceptions.NoAudioReceived as e:
-            st.warning(f"⚠️ edge_tts failed (Attempt {attempt + 1}/{max_retries + 1}): {str(e)[:100]}")
-            if attempt < max_retries:
-                time.sleep(2 ** attempt)
-                fallback_voice = "en-US-AriaNeural" if "en" in lang else "te-IN-SruthikaNeural"
-                fallback_rate = "-10%" if attempt == 0 else "+0%"
-                st.info(f"🔄 Retrying with voice={fallback_voice}, rate={fallback_rate}")
-                continue
-            else:
-                st.info(f"🔄 Falling back to gTTS (Attempt {attempt + 1}): {len(text)} chars")
-                tts = gTTS(text=text, lang=lang, slow=False)
-                tts.save(output_file)
-                
-                if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
-                    return True, "gtts"
-                else:
-                    raise Exception(f"gTTS failed: Empty file")
-                    
-        except Exception as e:
-            st.error(f"❌ Unexpected error in attempt {attempt + 1}: {str(e)[:100]}")
-            if attempt < max_retries:
-                time.sleep(2 ** attempt)
-                continue
-            raise
-
-# Helper function to run async code safely
-def run_async(coro):
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+# Generate Speech Chunk with gTTS
+def generate_speech_chunk(text, lang, output_file, speed_factor):
     try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+        tts = gTTS(text=text, lang=lang, slow=False)
+        tts.save(output_file)
+        
+        # Apply speed adjustment using pydub
+        if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+            audio = AudioSegment.from_file(output_file)
+            audio = audio.speedup(playback_speed=speed_factor)
+            audio.export(output_file, format="mp3")
+            st.info(f"✅ Chunk generated with gTTS: {len(text)} chars")
+            return True
+        else:
+            raise Exception("Empty file from gTTS")
+    except Exception as e:
+        st.error(f"❌ Failed to generate chunk: {str(e)[:100]}")
+        return False
 
 # Split text into chunks
 def split_text_into_chunks(text, max_chars=4000):
@@ -261,20 +223,18 @@ if user_text:
                 
                 for i, chunk in enumerate(chunks):
                     temp_file = f"temp_{i}.mp3"
-                    success, method = run_async(
-                        generate_speech_chunk(chunk, voice_options[voice], speed_map[rate], temp_file, lang)
-                    )
+                    success = generate_speech_chunk(chunk, voice_options[voice], temp_file, speed_map[rate])
                     if success:
                         temp_files.append(temp_file)
-                        st.info(f"Chunk {i+1}/{len(chunks)} ({method}): OK")
+                        st.info(f"Chunk {i+1}/{len(chunks)}: OK")
                     else:
                         failed_chunks += 1
-                        st.error(f"❌ Chunk {i+1} failed completely. Skipping.")
+                        st.error(f"❌ Chunk {i+1} failed. Skipping.")
                         if os.path.exists(temp_file):
                             os.remove(temp_file)
 
                 if not temp_files:
-                    st.error("❌ All chunks failed. Check network or try shorter text.")
+                    st.error("❌ All chunks failed. Try shorter text.")
                     st.stop()
 
                 if temp_files:
@@ -285,7 +245,7 @@ if user_text:
                     combined.export(output_file, format="mp3")
 
                 if failed_chunks > 0:
-                    st.warning(f"⚠️ {failed_chunks}/{len(chunks)} chunks failed (used fallback where possible).")
+                    st.warning(f"⚠️ {failed_chunks}/{len(chunks)} chunks failed.")
 
             if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
                 st.success("✅ Conversion Complete!")
@@ -321,4 +281,4 @@ if user_text:
                 os.remove(output_file)
 
 st.markdown("---")
-st.caption("🔊 Built with ❤️ by Jana using Edge-TTS and Streamlit (with gTTS fallback)")
+st.caption("🔊 Built with ❤️ by Jana using gTTS and Streamlit")
